@@ -3,10 +3,12 @@ import pandas as pd
 import streamlit as st
 from catboost import CatBoostRegressor
 
+st.set_page_config(page_title="Flight Delay Prediction Demo", page_icon="✈️")
+
 # =========================
 # 1) Put AIRPORT_COORDS HERE
 # =========================
-# 把你那一大段 AIRPORT_COORDS = {...} 粘贴到这里
+# 把你那一大段 AIRPORT_COORDS = {...} 粘贴到这里（完全照搬整段）
 # =========================
 # US Airport Coordinates
 # =========================
@@ -83,17 +85,30 @@ AIRPORT_COORDS = {
 
 MODEL_PATH = "model/flight_delay_catboost.cbm"
 
+FEATURE_COLUMNS = [
+    "year", "month", "day_of_week",
+    "op_unique_carrier", "origin", "dest",
+    "distance", "cancelled", "diverted",
+    "dep_hour", "dep_min", "arr_hour", "arr_min"
+]
+
+
 @st.cache_resource
 def load_model():
     m = CatBoostRegressor(verbose=False)
     m.load_model(MODEL_PATH)
     return m
 
+
 def haversine_distance(origin: str, dest: str) -> float:
     origin = origin.upper()
     dest = dest.upper()
+
     if origin not in AIRPORT_COORDS or dest not in AIRPORT_COORDS:
-        raise ValueError(f"Unknown airport code(s): {origin}, {dest}")
+        raise ValueError(
+            f"Unknown airport code(s): origin={origin}, dest={dest}. "
+            f"Please add them into AIRPORT_COORDS."
+        )
 
     lat1, lon1 = AIRPORT_COORDS[origin]
     lat2, lon2 = AIRPORT_COORDS[dest]
@@ -107,22 +122,18 @@ def haversine_distance(origin: str, dest: str) -> float:
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+
 def estimate_arrival_time(dep_hour: int, dep_min: int, distance_miles: float):
-    # cruise speed ~500 mph + 30 min buffer
+    # 简单估计：500mph 巡航 + 30min 缓冲（taxi/ATC）
     total_minutes = int(round(distance_miles / 500.0 * 60 + 30))
     dep_total = int(dep_hour) * 60 + int(dep_min)
     arr_total = (dep_total + total_minutes) % (24 * 60)
     return arr_total // 60, arr_total % 60
 
-FEATURE_COLUMNS = [
-    "year","month","day_of_week",
-    "op_unique_carrier","origin","dest",
-    "distance","cancelled","diverted",
-    "dep_hour","dep_min","arr_hour","arr_min"
-]
 
 def predict_delay(carrier, origin, dest, dep_hour, dep_min=0, year=2024, month=1, day_of_week=1):
     model = load_model()
+
     distance = haversine_distance(origin, dest)
     arr_hour, arr_min = estimate_arrival_time(dep_hour, dep_min, distance)
 
@@ -147,11 +158,14 @@ def predict_delay(carrier, origin, dest, dep_hour, dep_min=0, year=2024, month=1
 
     return pred, distance, f"{arr_hour:02d}:{arr_min:02d}"
 
+
 # =========================
-# Streamlit UI (put at bottom)
+# 2) Streamlit UI (MUST be top-level, NOT under __main__)
 # =========================
-st.set_page_config(page_title="Flight Delay Prediction Demo", page_icon="✈️")
 st.title("✈️ Flight Delay Prediction Demo")
+
+# 先放一个“肯定能看到”的测试输出：如果你连这个都看不到，就说明你根本没跑到这个文件
+st.write("✅ UI loaded. If you can see this, Streamlit is rendering correctly.")
 
 carrier = st.text_input("Carrier (e.g., AA)", "AA").upper()
 origin = st.text_input("Origin Airport (e.g., SFO)", "SFO").upper()
@@ -162,14 +176,23 @@ dep_min = st.slider("Departure Minute", 0, 59, 0)
 if st.button("Predict"):
     try:
         pred, dist, arr_time = predict_delay(
-            carrier=carrier, origin=origin, dest=dest,
-            dep_hour=dep_hour, dep_min=dep_min,
-            year=2024, month=1, day_of_week=1
+            carrier=carrier,
+            origin=origin,
+            dest=dest,
+            dep_hour=dep_hour,
+            dep_min=dep_min,
+            year=2024,
+            month=1,
+            day_of_week=1
         )
+
         st.caption(f"Estimated distance: {dist:.0f} miles")
         st.caption(f"Derived arrival time: {arr_time}")
+
         st.success(f"Predicted Delay: {pred:.1f} minutes")
         if pred < 0:
             st.info("Negative means expected early arrival.")
+
     except Exception as e:
-        st.error(str(e))
+        st.error(f"❌ Error: {e}")
+        st.info("Tip: check MODEL_PATH and whether the airport codes exist in AIRPORT_COORDS.")
