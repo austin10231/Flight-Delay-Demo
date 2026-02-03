@@ -1,0 +1,11 @@
+# ignore model files
+model/*.cbm
+model/*.pkl
+model/*.joblib
+
+# common
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+.env
