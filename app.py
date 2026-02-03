@@ -1,8 +1,12 @@
 import math
 import pandas as pd
+import streamlit as st
 from catboost import CatBoostRegressor
 
-
+# =========================
+# 1) Put AIRPORT_COORDS HERE
+# =========================
+# 把你那一大段 AIRPORT_COORDS = {...} 粘贴到这里
 # =========================
 # US Airport Coordinates
 # =========================
@@ -77,33 +81,24 @@ AIRPORT_COORDS = {
 }
 
 
-
-# =========================
-# 2) Load CatBoost model
-# =========================
 MODEL_PATH = "model/flight_delay_catboost.cbm"
 
-_model = CatBoostRegressor()
-_model.load_model(MODEL_PATH)
+@st.cache_resource
+def load_model():
+    m = CatBoostRegressor(verbose=False)
+    m.load_model(MODEL_PATH)
+    return m
 
-
-# =========================
-# 3) Distance: Haversine (miles)
-# =========================
 def haversine_distance(origin: str, dest: str) -> float:
     origin = origin.upper()
     dest = dest.upper()
-
     if origin not in AIRPORT_COORDS or dest not in AIRPORT_COORDS:
-        raise ValueError(
-            f"Unknown airport code(s). origin={origin}, dest={dest}. "
-            f"Please add them into AIRPORT_COORDS."
-        )
+        raise ValueError(f"Unknown airport code(s): {origin}, {dest}")
 
     lat1, lon1 = AIRPORT_COORDS[origin]
     lat2, lon2 = AIRPORT_COORDS[dest]
 
-    R = 3958.8  # Earth radius in miles
+    R = 3958.8  # miles
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
@@ -112,83 +107,32 @@ def haversine_distance(origin: str, dest: str) -> float:
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-
-# =========================
-# 4) Rough arrival time estimate (for arr_hour/arr_min features)
-# =========================
 def estimate_arrival_time(dep_hour: int, dep_min: int, distance_miles: float):
-    """
-    A simple heuristic:
-    - cruise speed ~ 500 mph
-    - add 30 minutes buffer for taxi/ATC, etc.
-    Returns (arr_hour, arr_min) in 24h time.
-    """
-    dep_hour = int(dep_hour)
-    dep_min = int(dep_min)
-
-    flight_hours = distance_miles / 500.0
-    total_minutes = int(round(flight_hours * 60 + 30))  # +30min buffer
-
-    dep_total = dep_hour * 60 + dep_min
+    # cruise speed ~500 mph + 30 min buffer
+    total_minutes = int(round(distance_miles / 500.0 * 60 + 30))
+    dep_total = int(dep_hour) * 60 + int(dep_min)
     arr_total = (dep_total + total_minutes) % (24 * 60)
+    return arr_total // 60, arr_total % 60
 
-    arr_hour = arr_total // 60
-    arr_min = arr_total % 60
-    return int(arr_hour), int(arr_min)
-
-
-# =========================
-# 5) Predict delay (minutes)
-# =========================
 FEATURE_COLUMNS = [
-    "year",
-    "month",
-    "day_of_week",
-    "op_unique_carrier",
-    "origin",
-    "dest",
-    "distance",
-    "cancelled",
-    "diverted",
-    "dep_hour",
-    "dep_min",
-    "arr_hour",
-    "arr_min",
+    "year","month","day_of_week",
+    "op_unique_carrier","origin","dest",
+    "distance","cancelled","diverted",
+    "dep_hour","dep_min","arr_hour","arr_min"
 ]
 
-
-def predict_delay(
-    carrier: str,
-    origin: str,
-    dest: str,
-    dep_hour: int,
-    dep_min: int = 0,
-    year: int = 2024,
-    month: int = 1,
-    day_of_week: int = 1,
-):
-    """
-    Predict expected arrival delay (minutes).
-    Negative => early arrival, Positive => delay.
-    """
-    carrier = carrier.upper()
-    origin = origin.upper()
-    dest = dest.upper()
-
-    # derive distance from airport coords
+def predict_delay(carrier, origin, dest, dep_hour, dep_min=0, year=2024, month=1, day_of_week=1):
+    model = load_model()
     distance = haversine_distance(origin, dest)
-
-    # derive arrival time features (rough)
     arr_hour, arr_min = estimate_arrival_time(dep_hour, dep_min, distance)
 
-    # build input row matching training schema
     input_data = {
         "year": int(year),
         "month": int(month),
         "day_of_week": int(day_of_week),
-        "op_unique_carrier": carrier,
-        "origin": origin,
-        "dest": dest,
+        "op_unique_carrier": carrier.upper(),
+        "origin": origin.upper(),
+        "dest": dest.upper(),
         "distance": float(distance),
         "cancelled": 0,
         "diverted": 0,
@@ -199,32 +143,33 @@ def predict_delay(
     }
 
     X = pd.DataFrame([input_data])[FEATURE_COLUMNS]
-    pred = float(_model.predict(X)[0])
+    pred = float(model.predict(X)[0])
 
-    return {
-        "predicted_delay_minutes": pred,
-        "distance_miles": float(distance),
-        "derived_arrival_time": f"{arr_hour:02d}:{arr_min:02d}",
-        "input": input_data,
-    }
-
+    return pred, distance, f"{arr_hour:02d}:{arr_min:02d}"
 
 # =========================
-# 6) Quick CLI test
+# Streamlit UI (put at bottom)
 # =========================
-if __name__ == "__main__":
-    # Example:
-    result = predict_delay(
-        carrier="AA",
-        origin="SFO",
-        dest="LAX",
-        dep_hour=10,
-        dep_min=0,
-        year=2024,
-        month=1,
-        day_of_week=1
-    )
+st.set_page_config(page_title="Flight Delay Prediction Demo", page_icon="✈️")
+st.title("✈️ Flight Delay Prediction Demo")
 
-    print(f"Distance: {result['distance_miles']:.0f} miles")
-    print(f"Derived arrival time: {result['derived_arrival_time']}")
-    print(f"Predicted delay: {result['predicted_delay_minutes']:.1f} minutes")
+carrier = st.text_input("Carrier (e.g., AA)", "AA").upper()
+origin = st.text_input("Origin Airport (e.g., SFO)", "SFO").upper()
+dest = st.text_input("Destination Airport (e.g., LAX)", "LAX").upper()
+dep_hour = st.slider("Departure Hour", 0, 23, 10)
+dep_min = st.slider("Departure Minute", 0, 59, 0)
+
+if st.button("Predict"):
+    try:
+        pred, dist, arr_time = predict_delay(
+            carrier=carrier, origin=origin, dest=dest,
+            dep_hour=dep_hour, dep_min=dep_min,
+            year=2024, month=1, day_of_week=1
+        )
+        st.caption(f"Estimated distance: {dist:.0f} miles")
+        st.caption(f"Derived arrival time: {arr_time}")
+        st.success(f"Predicted Delay: {pred:.1f} minutes")
+        if pred < 0:
+            st.info("Negative means expected early arrival.")
+    except Exception as e:
+        st.error(str(e))
