@@ -2,6 +2,9 @@ import math
 import pandas as pd
 import streamlit as st
 from catboost import CatBoostRegressor
+from pathlib import Path
+import requests
+
 
 st.set_page_config(page_title="Flight Delay Prediction Demo", page_icon="✈️")
 
@@ -83,7 +86,8 @@ AIRPORT_COORDS = {
 }
 
 
-MODEL_PATH = "model/flight_delay_catboost.cbm"
+MODEL_PATH = Path("model/flight_delay_catboost.cbm")
+MODEL_URL = "https://github.com/austin10231/Flight-Delay-Demo/releases/download/v1.0/flight_delay_catboost.cbm"
 
 FEATURE_COLUMNS = [
     "year", "month", "day_of_week",
@@ -92,12 +96,21 @@ FEATURE_COLUMNS = [
     "dep_hour", "dep_min", "arr_hour", "arr_min"
 ]
 
+def ensure_model():
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not MODEL_PATH.exists():
+        r = requests.get(MODEL_URL, timeout=180)
+        r.raise_for_status()
+        MODEL_PATH.write_bytes(r.content)
+
 
 @st.cache_resource
 def load_model():
+    ensure_model()
     m = CatBoostRegressor(verbose=False)
-    m.load_model(MODEL_PATH)
+    m.load_model(str(MODEL_PATH))
     return m
+
 
 
 def haversine_distance(origin: str, dest: str) -> float:
